@@ -80,3 +80,35 @@ MAPA/
 - Visualizations: rating distribution, success pie chart, correlation heatmap, model comparison bars, ROC curves, confusion matrices, feature importance
 - Saves best model as joblib file for integration with Streamlit dashboard
 - Includes predict_success() function ready for Phase 1 integration
+
+### Step 10 - Updated Success Criteria (2026-03-04)
+- Changed success definition: 4.1+ stars AND 100+ reviews (was just 4.1+ stars)
+- Updated notebook cells for new dual threshold
+- Updated config/settings.py with SUCCESS_REVIEW_THRESHOLD = 100
+- Updated Overview tab metrics to reflect new criteria
+- Updated map color coding: green = successful by new criteria
+
+### Step 11 - Success Predictor Tab Wired Up (2026-03-04)
+- Connected ML model to dashboard with live toggle inputs for all 8 binary features
+- Added numeric inputs for amenity counts
+- Loads trained model from models/ folder, runs prediction on button click
+- Shows success probability gauge chart and interpretation text
+- Handles case where model isn't trained yet with clear instructions
+
+### Step 12 - Download Data Tab (2026-03-04)
+- New tab listing all CSV files in data/ folder
+- Shows filename, file size, and download button for each
+- Users can download any CSV directly from the browser
+- Added delete all data button
+
+### Step 13 - Search History Tab (2026-03-04)
+- New tab showing all previous searches
+- Lists search tag, date, and load button
+- Loads businesses, reviews, analysis, and market gaps from CSV back into session state
+- No need to re-crawl -- instant data loading from previous runs
+
+### Step 14 - Bug Fixes (2026-03-04)
+- Fixed Streamlit session state crash (added unique keys to toggle widgets)
+- Fixed Selenium returning 0 results (disabled headless, added consent handler, fallback selectors)
+- Added incremental CSV auto-save during crawling (data preserved on interruption)
+- Added [MAPA] debug logging to terminal

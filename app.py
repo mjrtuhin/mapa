@@ -7,6 +7,7 @@ from streamlit_folium import st_folium
 import json
 import os
 import time
+import glob
 
 from config.settings import DATA_DIR, GOOGLE_MAPS_API_KEY, GROQ_API_KEY
 
@@ -130,8 +131,18 @@ with st.sidebar:
         st.success(f"Found {len(st.session_state.businesses)} businesses")
 
 
+def save_csv(dataframe, filename):
+    """Save a dataframe to CSV in the data folder."""
+    path = os.path.join(DATA_DIR, filename)
+    dataframe.to_csv(path, index=False)
+    print(f"[MAPA] Saved: {path}")
+    return path
+
+
 def run_search(business_type, area, data_source, review_limit, collect_nearby_flag):
     """Run the full search, review collection, and analysis pipeline."""
+
+    tag = f"{business_type}_{area}".replace(" ", "_").lower()
 
     status = st.status("Starting MAPA analysis...", expanded=True)
 
@@ -157,6 +168,11 @@ def run_search(business_type, area, data_source, review_limit, collect_nearby_fl
     progress_bar.progress(1.0)
     status.write(f"Found {len(businesses)} businesses!")
 
+    if businesses:
+        biz_df = pd.DataFrame(businesses)
+        save_csv(biz_df, f"{tag}_businesses.csv")
+        status.write(f"Auto-saved {len(businesses)} businesses to CSV.")
+
     if not businesses:
         status.update(label="No businesses found.", state="error")
         return
@@ -175,8 +191,21 @@ def run_search(business_type, area, data_source, review_limit, collect_nearby_fl
 
             url = biz.get("url", "")
             if url:
-                reviews = review_crawler.get_reviews(url, max_reviews=review_limit)
-                all_reviews[biz["name"]] = reviews
+                revs = review_crawler.get_reviews(url, max_reviews=review_limit)
+                all_reviews[biz["name"]] = revs
+
+                if revs:
+                    rows = []
+                    for r in revs:
+                        r["business_name"] = biz["name"]
+                        rows.append(r)
+                    rev_df = pd.DataFrame(rows)
+                    rev_path = os.path.join(DATA_DIR, f"{tag}_reviews.csv")
+                    if os.path.exists(rev_path):
+                        rev_df.to_csv(rev_path, mode="a", header=False, index=False)
+                    else:
+                        rev_df.to_csv(rev_path, index=False)
+                    status.write(f"Auto-saved {len(revs)} reviews for {biz['name']}.")
     else:
         from crawlers.google_api_crawler import GoogleAPICrawler
         api_crawler = GoogleAPICrawler()
@@ -186,7 +215,20 @@ def run_search(business_type, area, data_source, review_limit, collect_nearby_fl
             pid = biz.get("place_id", "")
             if pid:
                 details = api_crawler.get_place_details(pid)
-                all_reviews[biz["name"]] = details.get("reviews", [])
+                revs = details.get("reviews", [])
+                all_reviews[biz["name"]] = revs
+
+                if revs:
+                    rows = []
+                    for r in revs:
+                        r["business_name"] = biz.get("name", "")
+                        rows.append(r)
+                    rev_df = pd.DataFrame(rows)
+                    rev_path = os.path.join(DATA_DIR, f"{tag}_reviews.csv")
+                    if os.path.exists(rev_path):
+                        rev_df.to_csv(rev_path, mode="a", header=False, index=False)
+                    else:
+                        rev_df.to_csv(rev_path, index=False)
 
     st.session_state.reviews = all_reviews
     progress_bar_reviews.progress(1.0)
@@ -205,9 +247,40 @@ def run_search(business_type, area, data_source, review_limit, collect_nearby_fl
 
         st.session_state.analysis = analysis_results
 
+        if analysis_results:
+            analysis_rows = []
+            for biz_name, result in analysis_results.items():
+                sentiment = result.get("sentiment", {})
+                analysis_rows.append({
+                    "business_name": biz_name,
+                    "positive_pct": sentiment.get("positive_pct", 0),
+                    "negative_pct": sentiment.get("negative_pct", 0),
+                    "neutral_pct": sentiment.get("neutral_pct", 0),
+                    "summary": result.get("summary", ""),
+                    "top_positives": " | ".join(result.get("top_positives", [])),
+                    "top_negatives": " | ".join(result.get("top_negatives", [])),
+                    "topics": " | ".join(result.get("topics", [])),
+                })
+            analysis_df = pd.DataFrame(analysis_rows)
+            save_csv(analysis_df, f"{tag}_analysis.csv")
+            status.write("Auto-saved analysis results to CSV.")
+
         status.write("Detecting market gaps...")
         gaps = analyzer.detect_market_gaps(all_reviews, business_type, area)
         st.session_state.gaps = gaps
+
+        if gaps:
+            gaps_rows = []
+            for gap in gaps.get("gaps", []):
+                gaps_rows.append({"type": "gap", "description": gap})
+            for sat in gaps.get("saturated", []):
+                gaps_rows.append({"type": "saturated", "description": sat})
+            for opp in gaps.get("opportunities", []):
+                gaps_rows.append({"type": "opportunity", "description": opp})
+            if gaps_rows:
+                gaps_df = pd.DataFrame(gaps_rows)
+                save_csv(gaps_df, f"{tag}_market_gaps.csv")
+                status.write("Auto-saved market gaps to CSV.")
     else:
         st.warning("Groq API key not set. Skipping AI analysis. Add GROQ_API_KEY to .env.")
 
@@ -227,24 +300,24 @@ def run_search(business_type, area, data_source, review_limit, collect_nearby_fl
             if lat and lng:
                 nearby_results[biz["name"]] = collector.collect_nearby(lat, lng)
 
+                features = collector.to_features(nearby_results[biz["name"]])
+                features["business_name"] = biz["name"]
+                nearby_df = pd.DataFrame([features])
+                nearby_path = os.path.join(DATA_DIR, f"{tag}_nearby.csv")
+                if os.path.exists(nearby_path):
+                    nearby_df.to_csv(nearby_path, mode="a", header=False, index=False)
+                else:
+                    nearby_df.to_csv(nearby_path, index=False)
+                status.write(f"Auto-saved nearby data for {biz['name']}.")
+
         st.session_state.nearby_data = nearby_results
         progress_bar_nearby.progress(1.0)
     else:
         status.write("Step 4/4: Skipping nearby context (not selected).")
 
-    save_path = os.path.join(DATA_DIR, f"{business_type}_{area}.json")
-    save_data = {
-        "businesses": businesses,
-        "reviews": {k: v for k, v in all_reviews.items()},
-        "analysis": st.session_state.analysis,
-        "gaps": st.session_state.gaps,
-        "nearby": st.session_state.nearby_data,
-    }
-    with open(save_path, "w") as f:
-        json.dump(save_data, f, indent=2, default=str)
-
     st.session_state.search_done = True
     status.update(label="Analysis complete!", state="complete")
+    st.success(f"All data saved as CSV files in the data/ folder with prefix: {tag}_")
 
 
 if search_btn:
@@ -260,8 +333,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-tab_overview, tab_reviews, tab_gaps, tab_nearby, tab_predict = st.tabs(
-    ["Overview", "Reviews Analysis", "Market Gaps", "Nearby Context", "Success Predictor"]
+tab_overview, tab_reviews, tab_gaps, tab_nearby, tab_predict, tab_download, tab_history = st.tabs(
+    ["Overview", "Reviews Analysis", "Market Gaps", "Nearby Context", "Success Predictor", "Download Data", "Search History"]
 )
 
 
@@ -277,8 +350,12 @@ with tab_overview:
         total_reviews_count = sum(b.get("total_reviews", 0) for b in businesses)
         avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else 0
 
-        high_rated = len([r for r in ratings if r >= 4.1])
-        saturation = f"{round(high_rated / len(ratings) * 100)}%" if ratings else "N/A"
+        successful = len([
+            b for b in businesses
+            if b.get("rating") and b["rating"] >= 4.1
+            and b.get("total_reviews", 0) >= 100
+        ])
+        success_pct = f"{round(successful / len(businesses) * 100)}%" if businesses else "N/A"
 
         col1, col2, col3, col4 = st.columns(4)
         with col1:
@@ -288,7 +365,7 @@ with tab_overview:
         with col3:
             st.metric("Total Reviews", f"{total_reviews_count:,}")
         with col4:
-            st.metric("Above 4.1 Stars", saturation)
+            st.metric("Successful (4.1+ & 100+ rev)", success_pct)
 
         st.markdown("---")
 
@@ -307,7 +384,8 @@ with tab_overview:
                 m = folium.Map(location=[center_lat, center_lng], zoom_start=13)
 
                 for biz in valid_locations:
-                    color = "green" if biz.get("rating", 0) >= 4.1 else "orange" if biz.get("rating", 0) >= 3.5 else "red"
+                    is_success = (biz.get("rating", 0) >= 4.1 and biz.get("total_reviews", 0) >= 100)
+                    color = "green" if is_success else "orange" if biz.get("rating", 0) >= 3.5 else "red"
                     folium.CircleMarker(
                         location=[biz["lat"], biz["lng"]],
                         radius=6,
@@ -319,6 +397,7 @@ with tab_overview:
                     ).add_to(m)
 
                 st_folium(m, width=700, height=450)
+                st.caption("Green = successful (4.1+ stars & 100+ reviews) | Orange = moderate | Red = low rated")
             else:
                 st.warning("No location data available for map.")
 
@@ -533,32 +612,273 @@ with tab_nearby:
 
 with tab_predict:
     st.subheader("Success Predictor")
-    st.caption("ML-powered prediction: will a new business succeed in this area?")
+    st.caption("Will a new business with these features be successful? (4.1+ stars AND 100+ reviews)")
 
-    st.info(
-        "This feature uses a trained model from Phase 2 (Jupyter Notebook). "
-        "Once the model is trained on collected data, it will be integrated here."
-    )
+    model_path = os.path.join(os.path.dirname(__file__), "models", "best_model.joblib")
+    model_exists = os.path.exists(model_path)
 
-    st.markdown("**How it will work:**")
-    st.markdown(
-        "1. Collect data for businesses in a city using the Search tab\n"
-        "2. Train the ML model in the Jupyter notebook (Phase 2)\n"
-        "3. Come back here, enter features for a hypothetical new business\n"
-        "4. The model predicts whether it would achieve 4.1+ stars"
-    )
+    if not model_exists:
+        st.warning(
+            "No trained model found. To use predictions:\n\n"
+            "1. Collect data using the Search tab (multiple cities/categories recommended)\n"
+            "2. Open notebooks/business_success_predictor.ipynb\n"
+            "3. Run all cells to train the model\n"
+            "4. Come back here and refresh"
+        )
 
     st.markdown("---")
-    st.markdown("**Preview: Feature Input (coming soon)**")
+    st.markdown("**Enter features for your hypothetical business:**")
 
     col1, col2 = st.columns(2)
     with col1:
-        st.toggle("Has Parking Nearby", disabled=True)
-        st.toggle("Near Public Transport", disabled=True)
-        st.toggle("Near School/University", disabled=True)
-        st.toggle("On Main Road", disabled=True)
+        pred_parking = st.toggle("Has Parking Nearby", key="pred_parking")
+        pred_transport = st.toggle("Near Public Transport", key="pred_transport")
+        pred_school = st.toggle("Near School/University", key="pred_school")
+        pred_road = st.toggle("On Main Road", key="pred_road")
     with col2:
-        st.toggle("Near Shopping Area", disabled=True)
-        st.toggle("Near Hospital", disabled=True)
-        st.toggle("Near Park", disabled=True)
-        st.toggle("Near Tourist Attraction", disabled=True)
+        pred_shopping = st.toggle("Near Shopping Area", key="pred_shopping")
+        pred_hospital = st.toggle("Near Hospital", key="pred_hospital")
+        pred_park = st.toggle("Near Park", key="pred_park")
+        pred_tourist = st.toggle("Near Tourist Attraction", key="pred_tourist")
+
+    st.markdown("---")
+    st.markdown("**Additional details:**")
+
+    col3, col4 = st.columns(2)
+    with col3:
+        pred_parking_count = st.number_input("Parking spots nearby", min_value=0, max_value=20, value=2, key="pred_parking_count")
+        pred_transport_count = st.number_input("Transport stops nearby", min_value=0, max_value=20, value=1, key="pred_transport_count")
+        pred_school_count = st.number_input("Schools nearby", min_value=0, max_value=10, value=0, key="pred_school_count")
+        pred_road_count = st.number_input("Main roads nearby", min_value=0, max_value=5, value=1, key="pred_road_count")
+    with col4:
+        pred_shopping_count = st.number_input("Shopping areas nearby", min_value=0, max_value=10, value=0, key="pred_shopping_count")
+        pred_hospital_count = st.number_input("Hospitals nearby", min_value=0, max_value=5, value=0, key="pred_hospital_count")
+        pred_park_count = st.number_input("Parks nearby", min_value=0, max_value=10, value=1, key="pred_park_count")
+        pred_tourist_count = st.number_input("Tourist spots nearby", min_value=0, max_value=10, value=0, key="pred_tourist_count")
+
+    predict_btn = st.button("Predict Success", type="primary", use_container_width=True, key="predict_btn")
+
+    if predict_btn:
+        if not model_exists:
+            st.error("Train the ML model first using the Jupyter notebook.")
+        else:
+            import joblib
+
+            features_path = os.path.join(os.path.dirname(__file__), "models", "features.json")
+            scaler_path = os.path.join(os.path.dirname(__file__), "models", "scaler.joblib")
+
+            model = joblib.load(model_path)
+            scaler = joblib.load(scaler_path)
+
+            with open(features_path, "r") as f:
+                feature_config = json.load(f)
+
+            feature_input = {
+                "has_parking": int(pred_parking),
+                "has_public_transport": int(pred_transport),
+                "has_schools": int(pred_school),
+                "has_main_road": int(pred_road),
+                "has_shopping": int(pred_shopping),
+                "has_hospital": int(pred_hospital),
+                "has_park": int(pred_park),
+                "has_tourist_attraction": int(pred_tourist),
+                "parking_count": pred_parking_count,
+                "public_transport_count": pred_transport_count,
+                "schools_count": pred_school_count,
+                "main_road_count": pred_road_count,
+                "shopping_count": pred_shopping_count,
+                "hospital_count": pred_hospital_count,
+                "park_count": pred_park_count,
+                "tourist_attraction_count": pred_tourist_count,
+                "parking_closest_km": 0.1 if pred_parking else 999,
+                "public_transport_closest_km": 0.2 if pred_transport else 999,
+                "schools_closest_km": 0.3 if pred_school else 999,
+                "main_road_closest_km": 0.05 if pred_road else 999,
+                "shopping_closest_km": 0.2 if pred_shopping else 999,
+                "hospital_closest_km": 0.3 if pred_hospital else 999,
+                "park_closest_km": 0.15 if pred_park else 999,
+                "tourist_attraction_closest_km": 0.2 if pred_tourist else 999,
+                "total_reviews": 0,
+                "total_nearby_amenities": sum([
+                    pred_parking_count, pred_transport_count, pred_school_count,
+                    pred_road_count, pred_shopping_count, pred_hospital_count,
+                    pred_park_count, pred_tourist_count,
+                ]),
+                "amenity_diversity": sum([
+                    int(pred_parking), int(pred_transport), int(pred_school),
+                    int(pred_road), int(pred_shopping), int(pred_hospital),
+                    int(pred_park), int(pred_tourist),
+                ]),
+            }
+
+            feature_names = feature_config["features"]
+            feature_values = [feature_input.get(f, 0) for f in feature_names]
+            X_input = pd.DataFrame([feature_values], columns=feature_names)
+
+            model_name = feature_config.get("best_model", "")
+            if model_name == "Logistic Regression":
+                X_input = pd.DataFrame(scaler.transform(X_input), columns=feature_names)
+
+            prediction = model.predict(X_input)[0]
+            probability = model.predict_proba(X_input)[0]
+
+            st.markdown("---")
+            st.markdown("**Prediction Result:**")
+
+            if prediction == 1:
+                st.success(
+                    f"This business is likely to be SUCCESSFUL "
+                    f"(probability: {probability[1]:.0%})"
+                )
+            else:
+                st.error(
+                    f"This business may STRUGGLE to succeed "
+                    f"(success probability: {probability[1]:.0%})"
+                )
+
+            col_r1, col_r2 = st.columns(2)
+            with col_r1:
+                fig = go.Figure(go.Indicator(
+                    mode="gauge+number",
+                    value=probability[1] * 100,
+                    title={"text": "Success Probability"},
+                    gauge={
+                        "axis": {"range": [0, 100]},
+                        "bar": {"color": "#28a745" if prediction == 1 else "#dc3545"},
+                        "steps": [
+                            {"range": [0, 40], "color": "#f8d7da"},
+                            {"range": [40, 60], "color": "#fff3cd"},
+                            {"range": [60, 100], "color": "#d4edda"},
+                        ],
+                    },
+                ))
+                fig.update_layout(height=300)
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col_r2:
+                st.markdown("**What this means:**")
+                if probability[1] >= 0.7:
+                    st.write("Strong indicators of success. This location has good amenities and infrastructure nearby.")
+                elif probability[1] >= 0.5:
+                    st.write("Moderate chance of success. Some positive factors but room for improvement in location features.")
+                else:
+                    st.write("Lower chance of success based on location features alone. Consider areas with better infrastructure.")
+
+                st.markdown(f"**Model used:** {model_name}")
+                st.markdown(f"**Success = 4.1+ stars AND 100+ reviews**")
+
+
+with tab_download:
+    st.subheader("Download Data")
+    st.caption("Download collected data as CSV files.")
+
+    csv_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+
+    if not csv_files:
+        st.info("No data files yet. Run a search first to collect data.")
+    else:
+        st.markdown(f"**{len(csv_files)} files available:**")
+
+        for filepath in sorted(csv_files):
+            filename = os.path.basename(filepath)
+            file_size = os.path.getsize(filepath)
+            size_str = f"{file_size / 1024:.1f} KB" if file_size > 1024 else f"{file_size} bytes"
+
+            col_name, col_size, col_btn = st.columns([3, 1, 1])
+            with col_name:
+                st.markdown(f"**{filename}**")
+            with col_size:
+                st.caption(size_str)
+            with col_btn:
+                with open(filepath, "r") as f:
+                    csv_content = f.read()
+                st.download_button(
+                    label="Download",
+                    data=csv_content,
+                    file_name=filename,
+                    mime="text/csv",
+                    key=f"dl_{filename}",
+                )
+
+        st.markdown("---")
+        if st.button("Delete all data files", type="secondary", key="delete_all_data"):
+            for filepath in csv_files:
+                os.remove(filepath)
+            st.success("All data files deleted.")
+            st.rerun()
+
+
+with tab_history:
+    st.subheader("Search History")
+    st.caption("Load previously collected data without re-crawling.")
+
+    csv_files = glob.glob(os.path.join(DATA_DIR, "*_businesses.csv"))
+
+    if not csv_files:
+        st.info("No previous searches found. Run a search first.")
+    else:
+        search_options = []
+        for filepath in sorted(csv_files, reverse=True):
+            filename = os.path.basename(filepath)
+            tag = filename.replace("_businesses.csv", "")
+            mod_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(filepath)))
+            search_options.append({"tag": tag, "path": filepath, "date": mod_time})
+
+        st.markdown(f"**{len(search_options)} previous searches found:**")
+
+        for opt in search_options:
+            col_tag, col_date, col_btn = st.columns([3, 2, 1])
+            with col_tag:
+                st.markdown(f"**{opt['tag'].replace('_', ' ').title()}**")
+            with col_date:
+                st.caption(opt["date"])
+            with col_btn:
+                if st.button("Load", key=f"load_{opt['tag']}"):
+                    biz_df = pd.read_csv(opt["path"])
+                    st.session_state.businesses = biz_df.to_dict("records")
+
+                    tag = opt["tag"]
+                    reviews_path = os.path.join(DATA_DIR, f"{tag}_reviews.csv")
+                    if os.path.exists(reviews_path):
+                        rev_df = pd.read_csv(reviews_path)
+                        grouped = {}
+                        for biz_name, group in rev_df.groupby("business_name"):
+                            grouped[biz_name] = group.to_dict("records")
+                        st.session_state.reviews = grouped
+
+                    analysis_path = os.path.join(DATA_DIR, f"{tag}_analysis.csv")
+                    if os.path.exists(analysis_path):
+                        ana_df = pd.read_csv(analysis_path)
+                        analysis_dict = {}
+                        for _, row in ana_df.iterrows():
+                            analysis_dict[row["business_name"]] = {
+                                "sentiment": {
+                                    "positive_pct": row.get("positive_pct", 0),
+                                    "negative_pct": row.get("negative_pct", 0),
+                                    "neutral_pct": row.get("neutral_pct", 0),
+                                },
+                                "summary": row.get("summary", ""),
+                                "top_positives": str(row.get("top_positives", "")).split(" | "),
+                                "top_negatives": str(row.get("top_negatives", "")).split(" | "),
+                                "topics": str(row.get("topics", "")).split(" | "),
+                            }
+                        st.session_state.analysis = analysis_dict
+
+                    gaps_path = os.path.join(DATA_DIR, f"{tag}_market_gaps.csv")
+                    if os.path.exists(gaps_path):
+                        gaps_df = pd.read_csv(gaps_path)
+                        gaps_dict = {"gaps": [], "saturated": [], "opportunities": [], "summary": "Loaded from history."}
+                        for _, row in gaps_df.iterrows():
+                            gap_type = row.get("type", "")
+                            desc = row.get("description", "")
+                            if gap_type in gaps_dict:
+                                gaps_dict[gap_type].append(desc)
+                            elif gap_type == "gap":
+                                gaps_dict["gaps"].append(desc)
+                            elif gap_type == "opportunity":
+                                gaps_dict["opportunities"].append(desc)
+                        st.session_state.gaps = gaps_dict
+
+                    st.session_state.search_done = True
+                    st.success(f"Loaded: {tag.replace('_', ' ').title()}")
+                    st.rerun()
