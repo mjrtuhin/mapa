@@ -112,3 +112,10 @@ MAPA/
 - Fixed Selenium returning 0 results (disabled headless, added consent handler, fallback selectors)
 - Added incremental CSV auto-save during crawling (data preserved on interruption)
 - Added [MAPA] debug logging to terminal
+
+### Step 15 - CAPTCHA Fix (2026-03-04)
+- Problem: each business review fetch opened a new browser session, requiring CAPTCHA solve every time (224 times for 224 shops)
+- Added get_reviews_bulk() method to selenium_crawler.py that reuses ONE browser session for all reviews
+- Added _is_captcha_present() and _wait_for_captcha() methods for auto-detection and pause-until-solved
+- Updated app.py to call get_reviews_bulk() instead of looping individual get_reviews() calls
+- Now user solves CAPTCHA once, then all reviews are collected automatically

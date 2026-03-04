@@ -19,6 +19,7 @@ class SeleniumCrawler:
     Free crawler using SeleniumBase with undetected Chrome mode.
     Scrapes Google Maps directly for business listings and reviews.
     No API key needed.
+    Uses a single browser session to avoid repeated CAPTCHAs.
     """
 
     def __init__(self, headless=None):
@@ -53,6 +54,7 @@ class SeleniumCrawler:
                     sb.open(search_url)
                     time.sleep(5)
                     self._handle_consent(sb)
+                    self._wait_for_captcha(sb)
                     time.sleep(3)
                     self._scroll_results_panel(sb)
                     businesses = self._extract_listings(sb)
@@ -87,6 +89,7 @@ class SeleniumCrawler:
 
                         if idx == 0:
                             self._handle_consent(sb)
+                            self._wait_for_captcha(sb)
                             time.sleep(2)
 
                         self._scroll_results_panel(sb)
@@ -107,10 +110,100 @@ class SeleniumCrawler:
         print(f"[MAPA] Total unique businesses: {len(all_businesses)}")
         return list(all_businesses.values())
 
+    def get_reviews_bulk(self, businesses, max_reviews=50, progress_callback=None):
+        """
+        Scrape reviews for multiple businesses using ONE browser session.
+        Solves CAPTCHA once, then reuses the session for all businesses.
+        Returns a dict of {business_name: [reviews]}.
+        """
+        all_reviews = {}
+        total = len(businesses)
+
+        with SB(uc=True, headless=self.headless) as sb:
+            sb.open("https://www.google.com/maps")
+            time.sleep(3)
+            self._handle_consent(sb)
+            self._wait_for_captcha(sb)
+
+            print(f"[MAPA] Browser session ready. Collecting reviews for {total} businesses...")
+
+            for idx, biz in enumerate(businesses):
+                biz_name = biz.get("name", "Unknown")
+                url = biz.get("url", "")
+
+                if progress_callback:
+                    progress_callback(idx + 1, total)
+
+                if not url:
+                    print(f"[MAPA] {idx+1}/{total}: Skipping {biz_name} (no URL)")
+                    continue
+
+                print(f"[MAPA] {idx+1}/{total}: Getting reviews for {biz_name}...")
+
+                try:
+                    sb.open(url)
+                    time.sleep(3 + random.random())
+
+                    if self._is_captcha_present(sb):
+                        print(f"[MAPA] CAPTCHA detected. Solve it in the browser, then it will continue...")
+                        self._wait_for_captcha(sb)
+                        sb.open(url)
+                        time.sleep(3)
+
+                    try:
+                        sb.click('button[aria-label*="Reviews"]', timeout=8)
+                        time.sleep(2)
+                    except Exception:
+                        try:
+                            sb.click('div[role="tab"]:nth-child(2)', timeout=5)
+                            time.sleep(2)
+                        except Exception:
+                            pass
+
+                    scroll_count = max_reviews // 5
+                    for i in range(scroll_count):
+                        try:
+                            sb.execute_script(
+                                """
+                                var panels = document.querySelectorAll('div.m6QErb.DxyBCb');
+                                var panel = panels[panels.length - 1];
+                                if (panel) { panel.scrollBy(0, 1000); }
+                                """
+                            )
+                            time.sleep(0.5 + random.random() * 0.5)
+                        except Exception:
+                            break
+
+                    try:
+                        sb.execute_script(
+                            """
+                            document.querySelectorAll('button.w8nwRe.kyuRq').forEach(
+                                function(btn) { btn.click(); }
+                            );
+                            """
+                        )
+                        time.sleep(1)
+                    except Exception:
+                        pass
+
+                    page_source = sb.get_page_source()
+                    reviews = self._extract_reviews(page_source)
+                    all_reviews[biz_name] = reviews[:max_reviews]
+                    print(f"[MAPA] {idx+1}/{total}: Got {len(reviews)} reviews for {biz_name}")
+
+                except Exception as e:
+                    print(f"[MAPA] {idx+1}/{total}: Error for {biz_name}: {e}")
+                    all_reviews[biz_name] = []
+
+                delay = random.uniform(1.5, 3.0)
+                time.sleep(delay)
+
+        return all_reviews
+
     def get_reviews(self, place_url, max_reviews=50, progress_callback=None):
         """
-        Scrape reviews for a single business from its Google Maps URL.
-        Returns a list of review dicts.
+        Scrape reviews for a single business.
+        For multiple businesses, use get_reviews_bulk() instead.
         """
         reviews = []
 
@@ -119,6 +212,7 @@ class SeleniumCrawler:
                 sb.open(place_url)
                 time.sleep(5)
                 self._handle_consent(sb)
+                self._wait_for_captcha(sb)
 
                 try:
                     sb.click('button[aria-label*="Reviews"]', timeout=10)
@@ -140,9 +234,7 @@ class SeleniumCrawler:
                             """
                             var panels = document.querySelectorAll('div.m6QErb.DxyBCb');
                             var panel = panels[panels.length - 1];
-                            if (panel) {
-                                panel.scrollBy(0, 1000);
-                            }
+                            if (panel) { panel.scrollBy(0, 1000); }
                             """
                         )
                         time.sleep(0.5 + random.random())
@@ -229,6 +321,51 @@ class SeleniumCrawler:
                 print(f"[MAPA] Error fetching details: {e}")
 
         return details
+
+    def _is_captcha_present(self, sb):
+        """Check if a CAPTCHA is currently showing."""
+        try:
+            page_source = sb.get_page_source()
+            captcha_indicators = [
+                "recaptcha",
+                "g-recaptcha",
+                "captcha",
+                "unusual traffic",
+                "not a robot",
+                "verify you're human",
+            ]
+            page_lower = page_source.lower()
+            for indicator in captcha_indicators:
+                if indicator in page_lower:
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _wait_for_captcha(self, sb):
+        """
+        If CAPTCHA is detected, pause and wait for the user to solve it.
+        Checks every 3 seconds until CAPTCHA is gone.
+        """
+        if not self._is_captcha_present(sb):
+            return
+
+        print("[MAPA] *** CAPTCHA DETECTED ***")
+        print("[MAPA] Please solve the CAPTCHA in the browser window.")
+        print("[MAPA] Waiting for you to complete it...")
+
+        wait_count = 0
+        while self._is_captcha_present(sb):
+            time.sleep(3)
+            wait_count += 1
+            if wait_count % 10 == 0:
+                print(f"[MAPA] Still waiting for CAPTCHA... ({wait_count * 3}s)")
+            if wait_count > 200:
+                print("[MAPA] CAPTCHA wait timeout (10 min). Continuing anyway.")
+                break
+
+        print("[MAPA] CAPTCHA resolved. Continuing...")
+        time.sleep(2)
 
     def _handle_consent(self, sb):
         """Handle Google's cookie consent popup if it appears."""

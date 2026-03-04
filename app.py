@@ -177,41 +177,42 @@ def run_search(business_type, area, data_source, review_limit, collect_nearby_fl
         status.update(label="No businesses found.", state="error")
         return
 
-    status.write("Step 2/4: Collecting reviews...")
+    status.write("Step 2/4: Collecting reviews (single browser session)...")
     progress_bar_reviews = st.progress(0)
     all_reviews = {}
+    review_businesses = businesses[:20]
 
     if data_source == "Selenium (Free)":
         from crawlers.selenium_crawler import SeleniumCrawler
         review_crawler = SeleniumCrawler()
 
-        for idx, biz in enumerate(businesses[:20]):
-            progress_bar_reviews.progress((idx + 1) / min(len(businesses), 20))
-            status.write(f"Getting reviews for: {biz.get('name', 'Unknown')}...")
+        def review_progress(current, total):
+            progress_bar_reviews.progress(current / total)
+            status.write(f"Getting reviews: {current}/{total}...")
 
-            url = biz.get("url", "")
-            if url:
-                revs = review_crawler.get_reviews(url, max_reviews=review_limit)
-                all_reviews[biz["name"]] = revs
+        all_reviews = review_crawler.get_reviews_bulk(
+            review_businesses, max_reviews=review_limit, progress_callback=review_progress
+        )
 
-                if revs:
-                    rows = []
-                    for r in revs:
-                        r["business_name"] = biz["name"]
-                        rows.append(r)
-                    rev_df = pd.DataFrame(rows)
-                    rev_path = os.path.join(DATA_DIR, f"{tag}_reviews.csv")
-                    if os.path.exists(rev_path):
-                        rev_df.to_csv(rev_path, mode="a", header=False, index=False)
-                    else:
-                        rev_df.to_csv(rev_path, index=False)
-                    status.write(f"Auto-saved {len(revs)} reviews for {biz['name']}.")
+        for biz_name, revs in all_reviews.items():
+            if revs:
+                rows = []
+                for r in revs:
+                    r["business_name"] = biz_name
+                    rows.append(r)
+                rev_df = pd.DataFrame(rows)
+                rev_path = os.path.join(DATA_DIR, f"{tag}_reviews.csv")
+                if os.path.exists(rev_path):
+                    rev_df.to_csv(rev_path, mode="a", header=False, index=False)
+                else:
+                    rev_df.to_csv(rev_path, index=False)
+        status.write(f"Auto-saved reviews to CSV.")
     else:
         from crawlers.google_api_crawler import GoogleAPICrawler
         api_crawler = GoogleAPICrawler()
 
-        for idx, biz in enumerate(businesses[:20]):
-            progress_bar_reviews.progress((idx + 1) / min(len(businesses), 20))
+        for idx, biz in enumerate(review_businesses):
+            progress_bar_reviews.progress((idx + 1) / len(review_businesses))
             pid = biz.get("place_id", "")
             if pid:
                 details = api_crawler.get_place_details(pid)
