@@ -10,6 +10,16 @@ import time
 import glob
 
 from config.settings import DATA_DIR, GOOGLE_MAPS_API_KEY, GROQ_API_KEY
+import math
+
+
+def is_valid_coord(val):
+    if val is None:
+        return False
+    try:
+        return not math.isnan(float(val))
+    except (TypeError, ValueError):
+        return False
 
 st.set_page_config(
     page_title="MAPA - Map Analytics",
@@ -298,7 +308,7 @@ def run_search(business_type, area, data_source, review_limit, collect_nearby_fl
             status.write(f"Checking nearby for: {biz.get('name', 'Unknown')}...")
 
             lat, lng = biz.get("lat"), biz.get("lng")
-            if lat and lng:
+            if is_valid_coord(lat) and is_valid_coord(lng):
                 nearby_results[biz["name"]] = collector.collect_nearby(lat, lng)
 
                 features = collector.to_features(nearby_results[biz["name"]])
@@ -375,7 +385,8 @@ with tab_overview:
         with col_map:
             st.markdown("**Map View**")
             valid_locations = [
-                b for b in businesses if b.get("lat") and b.get("lng")
+                b for b in businesses
+                if is_valid_coord(b.get("lat")) and is_valid_coord(b.get("lng"))
             ]
 
             if valid_locations:
