@@ -161,6 +161,69 @@ Return ONLY valid JSON, no extra text."""
                 "summary": f"Analysis error: {str(e)}",
             }
 
+    def generate_master_summary(self, all_reviews_by_business, business_type, area):
+        """
+        Generate a large, comprehensive written analysis covering ALL reviews
+        across ALL businesses. Returns a detailed passage addressing every
+        business, common themes, standout performers, problem areas, and
+        overall market sentiment.
+        """
+        if not all_reviews_by_business:
+            return "No reviews available to summarize."
+
+        review_summaries = []
+        for biz_name, reviews in list(all_reviews_by_business.items())[:25]:
+            sample = []
+            for r in reviews[:15]:
+                text = r.get("text", "")
+                rating = r.get("rating", "")
+                if text:
+                    sample.append(f"[{rating} stars] {text[:200]}")
+            if sample:
+                review_summaries.append(
+                    f"=== {biz_name} ({len(reviews)} reviews) ===\n"
+                    + "\n".join(sample)
+                )
+
+        if not review_summaries:
+            return "No review text available to analyze."
+
+        combined = "\n\n".join(review_summaries)
+
+        prompt = f"""You are a senior market research analyst writing a comprehensive report about {business_type} businesses in {area}.
+
+Below are real customer reviews from multiple businesses. Write a DETAILED analysis passage (at least 500 words) that covers:
+
+1. Overall market sentiment: How do customers in {area} feel about {business_type} businesses overall?
+2. Business-by-business breakdown: Mention each business by name. What are they known for? What do customers love or hate about them specifically?
+3. Common praise: What themes appear across positive reviews? What are customers consistently happy about?
+4. Common complaints: What problems keep appearing? What frustrates customers the most?
+5. Standout performers: Which businesses stand out positively and why?
+6. Problem areas: Which businesses have serious issues and what are they?
+7. Customer expectations: What do customers in this market expect from a good {business_type}?
+8. Service quality patterns: Are there patterns in service quality, pricing, cleanliness, atmosphere, or staff behavior?
+9. Recommendations: Based on all this data, what should a new business entering this market focus on to succeed?
+
+Write this as flowing prose, not bullet points. Use specific details and examples from the reviews. Be analytical, not just descriptive. Make it read like a professional market intelligence report.
+
+Reviews data:
+{combined}
+
+Write the full analysis now. Do NOT use any markdown formatting, headers, or bullet points. Just write flowing paragraphs."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5,
+                max_tokens=4000,
+            )
+
+            return response.choices[0].message.content.strip()
+
+        except Exception as e:
+            return f"Failed to generate master summary: {str(e)}"
+
     def analyze_single_review(self, review_text):
         """Quick sentiment analysis for a single review."""
         if not review_text:

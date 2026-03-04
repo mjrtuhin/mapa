@@ -92,6 +92,8 @@ if "gaps" not in st.session_state:
     st.session_state.gaps = {}
 if "nearby_data" not in st.session_state:
     st.session_state.nearby_data = {}
+if "master_summary" not in st.session_state:
+    st.session_state.master_summary = ""
 if "search_done" not in st.session_state:
     st.session_state.search_done = False
 
@@ -292,6 +294,15 @@ def run_search(business_type, area, data_source, review_limit, collect_nearby_fl
                 gaps_df = pd.DataFrame(gaps_rows)
                 save_csv(gaps_df, f"{tag}_market_gaps.csv")
                 status.write("Auto-saved market gaps to CSV.")
+
+        status.write("Generating comprehensive review summary...")
+        master = analyzer.generate_master_summary(all_reviews, business_type, area)
+        st.session_state.master_summary = master
+
+        master_path = os.path.join(DATA_DIR, f"{tag}_master_summary.txt")
+        with open(master_path, "w") as f:
+            f.write(master)
+        status.write("Auto-saved master summary.")
     else:
         st.warning("Groq API key not set. Skipping AI analysis. Add GROQ_API_KEY to .env.")
 
@@ -451,6 +462,16 @@ with tab_reviews:
     if not st.session_state.search_done or not st.session_state.analysis:
         st.info("Run a search first to see review analysis. Make sure GROQ_API_KEY is set in .env.")
     else:
+        if st.session_state.master_summary:
+            st.markdown("**Comprehensive Market Review Analysis**")
+            st.markdown(
+                f'<div style="background-color:#f8f9fa; padding:20px; border-radius:10px; '
+                f'border-left:4px solid #007bff; line-height:1.8; font-size:15px;">'
+                f'{st.session_state.master_summary}</div>',
+                unsafe_allow_html=True,
+            )
+            st.markdown("---")
+
         analysis = st.session_state.analysis
 
         biz_names = list(analysis.keys())
@@ -890,6 +911,13 @@ with tab_history:
                             elif gap_type == "opportunity":
                                 gaps_dict["opportunities"].append(desc)
                         st.session_state.gaps = gaps_dict
+
+                    master_path = os.path.join(DATA_DIR, f"{tag}_master_summary.txt")
+                    if os.path.exists(master_path):
+                        with open(master_path, "r") as f:
+                            st.session_state.master_summary = f.read()
+                    else:
+                        st.session_state.master_summary = ""
 
                     st.session_state.search_done = True
                     st.success(f"Loaded: {tag.replace('_', ' ').title()}")
